@@ -1,3 +1,5 @@
+from cgitb import reset
+from operator import rshift
 from api.data import popular, goodfellas
 from api.exceptions.notfound import NotFoundException
 
@@ -22,9 +24,20 @@ class FavoriteDAO:
     """
     # tag::all[]
     def all(self, user_id, sort = 'title', order = 'ASC', limit = 6, skip = 0):
+        with self.driver.session() as session:
+            movies = session.read_transaction(lambda tx: tx.run("""
+                    MATCH (u:User {{userId: $userId}})-[r:HAS_FAVORITE]->(m:Movie)
+                    RETURN m {{
+                        .*,
+                        favorite: true
+                    }} AS movie
+                    ORDER BY m.`{0}` {1}
+                    SKIP $skip
+                    LIMIT $limit
+                """.format(sort, order), userId=user_id, limit=limit, skip=skip).value("movie"))
         # TODO: Open a new session
         # TODO: Retrieve a list of movies favorited by the user
-        return popular
+            return movies
     # end::all[]
 
 
@@ -36,15 +49,30 @@ class FavoriteDAO:
     """
     # tag::add[]
     def add(self, user_id, movie_id):
+        def add_to_favorites(tx, user_id, movie_id):
+            result = tx.run("""
+                MATCH(u:User {userId: $user_id})
+                MATCH(m:Movie {tmdbId: $movie_id})
+
+                MERGE (u)-[:HAS_FAVORITE]->(m)
+                ON CREATE SET u.createdAt = datetime()
+
+                RETURN m {
+                    .*,
+                    favorite: true
+                } AS movie
+            """, user_id=user_id, movie_id=movie_id).single()
+            if result is None:
+                raise NotFoundException()
+            return result['movie']
+
+        with self.driver.session() as session:
+            return session.write_transaction(add_to_favorites, user_id, movie_id)
+           
         # TODO: Open a new Session
         # TODO: Define a new transaction function to create a HAS_FAVORITE relationship
         # TODO: Execute the transaction function within a Write Transaction
         # TODO: Return movie details and `favorite` property
-
-        return {
-            **goodfellas,
-            "favorite": False
-        }
     # end::add[]
 
     """
@@ -56,13 +84,28 @@ class FavoriteDAO:
     """
     # tag::remove[]
     def remove(self, user_id, movie_id):
+        def remove_from_favorites(tx, user_id, movie_id):
+            result = tx.run("""
+                MATCH (u:User {userId: $user_id})-[r:HAS_FAVORITE]->(m:Movie {tmdbId: $movie_id})
+                DELETE r
+
+                RETURN m {
+                    .*,
+                    favorite: false
+                } AS movie
+            """, user_id = user_id, movie_id = movie_id).single()
+
+            if result is None:
+                raise NotFoundException
+            else:
+                return result['movie']
+
+
+        with self.driver.session() as session:
+            return session.write_transaction(remove_from_favorites, user_id, movie_id)
         # TODO: Open a new Session
         # TODO: Define a transaction function to delete the HAS_FAVORITE relationship within a Write Transaction
         # TODO: Execute the transaction function within a Write Transaction
         # TODO: Return movie details and `favorite` property
 
-        return {
-            **goodfellas,
-            "favorite": False
-        }
     # end::remove[]
